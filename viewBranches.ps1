@@ -12,7 +12,7 @@
     If specified, retrieves all branches for each Git repo found in the current
     repoFolder. If not specified, retrieves only the current branch in each repoFolder.
 
-.PARAMETER -branchSearch
+.PARAMETER -branchNameSearch
     If specified, filters the branches to only show those that contain the
     specified string, case-insensitive.
 
@@ -32,104 +32,101 @@
     "feature".
 #>
 
-
 param (
+    [CmdletBinding()]
     [switch]$all = $false,
+    [CmdletBinding()]
     [string]$branchNameSearch = ""
 )
 
-# save the repoFolder this script was run from, to return to it at the end
-$directoryScriptWasRunFrom = Get-Location
-# assuming the repoFolder this script is in is the `repos` repoFolder
-$reposFolder = $PSScriptRoot
+#region Functions
+function Get-All-Branch-Names {
+    param (
+        [string]$repoFolderName,
+        [hashtable]$output
+    )
 
-$output = @{}
+    $branchNames = & git branch --format="%(refname:short)" 2>&1
 
-Set-Location $reposFolder
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Error retrieving branches for '$($repoFolderName)': $branchNames"
 
-$repoFolders = Get-ChildItem -Directory
-
-foreach ($repoFolder in $repoFolders) {
-    Set-Location $repoFolder.FullName
-
-    $isGitRepoFolder = (Test-Path ".git")
-
-    if (-not $isGitRepoFolder) {
-        Set-Location $reposFolder
-        continue
-    }
-
-    try {
-        if ($all) {
-            $branchNames = & git branch --format="%(refname:short)" 2>&1
-
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "Error retrieving branches for '$($repoFolder.Name)': $branchNames"
-                $output[$repoFolder.Name] = @("Error")
-                continue
-            }
-   
-            $currentBranch = & git rev-parse --abbrev-ref HEAD 2>&1
-
-            if ($LASTEXITCODE -eq 0) {
-                $currentBranchTrimmed = $currentBranch.Trim()
-                $branchNamesTrimmed = $branchNames | ForEach-Object { $_.Trim() }
-
-                if ($branchNameSearch) {
-                    $branchNamesTrimmed = $branchNamesTrimmed | Where-Object { $_ -like "*$branchNameSearch*" }
-                }
-
-                $output[$repoFolder.Name] = @()
-
-                if ($branchNamesTrimmed -contains $currentBranchTrimmed) {
-                    $output[$repoFolder.Name] += "$currentBranchTrimmed (current)"
-                    $output[$repoFolder.Name] += $branchNamesTrimmed | Where-Object { $_ -ne $currentBranchTrimmed } | Sort-Object
-                }
-                else {
-                    $output[$repoFolder.Name] = $branchNamesTrimmed | Sort-Object
-                }
-            }
-            else {
-                Write-Warning "Error retrieving current branch for '$($repoFolder.Name)': $currentBranch"
-                $output[$repoFolder.Name] = $branchNames | ForEach-Object { $_.Trim() }
-            }
-            
-            continue
+        if ($branchNameSearch.Length -eq 0) {
+            $output[$repoFolderName] = @("Error")
         }
-        else {
-            $branchName = & git rev-parse --abbrev-ref HEAD 2>&1
+        
+        return
+    }
 
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "Error retrieving current branch for '$($repoFolder.Name)': $branchName"
+    $currentBranch = & git rev-parse --abbrev-ref HEAD 2>&1
 
-                if ($branchNameSearch.Length -eq 0) {
-                    $output[$repoFolder.Name] = @("Error")
-                }
-            }
-            elseif ($branchName -like "*$branchNameSearch*") {
-                $output[$repoFolder.Name] = @($branchName)
-            }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Error retrieving current branch for '$($repoFolderName)': $currentBranch"
+
+        if ($branchNameSearch.Length -eq 0) {
+            $output[$repoFolderName] = $branchNames | ForEach-Object { $_.Trim() }
         }
+        
+        return
     }
-    catch {
-        Write-Warning "An exception occurred: $_"
-        $output[$repoFolder.Name] = @("Error")
+
+    $currentBranchTrimmed = $currentBranch.Trim()
+    $branchNamesTrimmed = $branchNames | ForEach-Object { $_.Trim() }
+
+    if ($branchNameSearch.Length -gt 0) {
+        $branchNamesTrimmed = $branchNamesTrimmed | Where-Object { $_ -like "*$branchNameSearch*" }
     }
-    
-    Set-Location $reposFolder
+
+    if ($branchNamesTrimmed.Length -eq 0) {
+        return
+    }
+
+    $output[$repoFolderName] = @()
+
+    if ($branchNamesTrimmed -contains $currentBranchTrimmed) {
+        $output[$repoFolderName] += "$currentBranchTrimmed (current)"
+        $output[$repoFolderName] += $branchNamesTrimmed | Where-Object { $_ -ne $currentBranchTrimmed } | Sort-Object
+    }
+    else {
+        $output[$repoFolderName] = $branchNamesTrimmed | Sort-Object
+    }
 }
 
-$hasOutput = $false
+function Get-Current-Branch-Name {
+    param (
+        [string]$repoFolderName,
+        [hashtable]$output
+    )
 
-if ($all) {
-    Write-Output ""
+    $branchName = & git rev-parse --abbrev-ref HEAD 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Error retrieving current branch for '$($repoFolderName)': $branchName"
+
+        if ($branchNameSearch.Length -eq 0) {
+            $output[$repoFolderName] = @("Error")
+        }
+
+        return
+    }
+
+    if ($branchName -like "*$branchNameSearch*") {
+        $output[$repoFolderName] = @($branchName)
+    }
+}
+
+function Write-All-Branch-Names {
+    param (
+        [hashtable]$output
+    )
+
+    Write-Host ""
 
     $output.GetEnumerator() | Sort-Object Name | ForEach-Object {
         if ($_.Value.Length -eq 0) {
             return
         }
 
-        $hasOutput = $true
         $repoBranches = @()
 
         foreach ($branchName in $_.Value) {
@@ -138,23 +135,101 @@ if ($all) {
             }
         }
 
-        Write-Output (($repoBranches | Format-Table -AutoSize | Out-String).Trim() + "`n")
+        Write-Host (($repoBranches | Format-Table -AutoSize | Out-String).Trim() + "`n")
     }
 }
-else {
-    $output.GetEnumerator() | Sort-Object Name | ForEach-Object {    
-        $hasOutput = $true   
+
+function Write-Current-Branch-Names {
+    param (
+        [hashtable]$output
+    )
+
+    $output.GetEnumerator() | Sort-Object Name | ForEach-Object {  
+        $currentBranch = "Unknown"
+        
+        if ($_.Value.Length -eq 0) { 
+            $currentBranch = "No branches found"
+            
+            if ($branchNameSearch.Length -gt 0) {
+                $currentBranch = $currentBranch, "matching '$($branchNameSearch)'" -Join " "
+            }
+        } 
+        elseif ($_.Value[0] -eq "Error") { 
+            $currentBranch = "Error retrieving branch" 
+        } 
+        else { 
+            $currentBranch = $_.Value[0] 
+        }
+        
         [pscustomobject]@{
             Repo             = $_.Key
-            "Current Branch" = if ($_.Value.Length -eq 0) { "No branches found $(if ($branchNameSearch.Length -gt 0) { "matching '$($branchNameSearch)'" })" } 
-            elseif ($_.Value[0] -eq "Error") { "Error retrieving branch" } 
-            else { $_.Value[0] }
+            "Current Branch" = $currentBranch
         }
     } | Format-Table -AutoSize
+
+    if ($branchNameSearch.Length -gt 0) {
+        Write-Host "sdg"
+    }
 }
 
-if (-not $hasOutput) {
-    Write-Output "No branches found $(if ($branchNameSearch.Length -gt 0) { "matching '$($branchNameSearch)'" })"
+function Handle-Repo-Folder {
+    param (
+        [System.IO.DirectoryInfo]$repoFolder,
+        [hashtable]$output
+    )
+
+    Push-Location $repoFolder.FullName
+
+    $isGitRepoFolder = Test-Path ".git"
+
+    if (-not $isGitRepoFolder) {
+        Pop-Location
+        continue
+    }
+
+    try {
+        if ($all) {
+            Get-All-Branch-Names -repoFolderName $repoFolder -output $output
+        }
+        else {
+            Get-Current-Branch-Name -repoFolderName $repoFolder -output $output
+        }
+    }
+    catch {
+        Write-Warning "An exception occurred: $_"
+        $output[$repoFolder.Name] = @("Error")
+    }
+    
+    Pop-Location
+}
+#endregion
+
+# assuming the repoFolder this script is in is the `repos` repoFolder
+$reposFolder = $PSScriptRoot
+Push-Location $reposFolder
+
+$repoFolders = Get-ChildItem -Directory
+$output = @{}
+
+foreach ($repoFolder in $repoFolders) {
+    Handle-Repo-Folder -repoFolder $repoFolder -output $output
 }
 
-Set-Location $directoryScriptWasRunFrom
+if ($all) {
+    Write-All-Branch-Names -output $output
+}
+else {
+    Write-Current-Branch-Names -output $output
+}
+
+if ($output.Count -eq 0) {
+    $currentBranch = "No branches found"
+            
+    if ($branchNameSearch.Length -gt 0) { 
+        $currentBranch = $currentBranch, "matching '$($branchNameSearch)'" -Join " "
+    }
+            
+    Write-Host $currentBranch
+}
+
+Pop-Location
